@@ -1,5 +1,6 @@
 import argparse
 import re
+from pathlib import Path
 from spellchecker import SpellChecker
 
 # Function Definitions
@@ -12,9 +13,6 @@ def normalize_case(text, to_lower=True):
 
 def replace_special_characters(text):
     return re.sub(r'[^\w\s,.!?]', '', text)
-
-def ensure_utf8_encoding(text):
-    return text.encode('utf-8', errors='ignore').decode('utf-8')
 
 def format_paragraphs(text):
     return '\n\n'.join([f"# {line.strip()}" if line.startswith('#') else line for line in text.splitlines()])
@@ -29,16 +27,6 @@ def format_lists(text):
             formatted_lines.append(f"{line}")
     return '\n'.join(formatted_lines)
 
-def convert_tables_to_markdown(table_data):
-    markdown_table = ""
-    for row in table_data:
-        markdown_table += "| " + " | ".join(row) + " |\n"
-        markdown_table += "| " + " | ".join(['---'] * len(row)) + " |\n"
-    return markdown_table.strip()
-
-def extract_images_and_references(image_paths):
-    return [f"![alt text]({path})" for path in image_paths]
-
 def convert_hyperlinks(text):
     return re.sub(r'(https?://[^\s]+)', r'[\1](\1)', text)
 
@@ -48,51 +36,56 @@ def spell_check(text):
     corrected_text = ' '.join([spell.candidates(word).pop() if word not in spell else word for word in words])
     return corrected_text
 
-def extract_metadata(metadata):
-    title = metadata.get('title', 'Untitled')
-    author = metadata.get('author', 'Unknown')
-    date = metadata.get('date', 'Unknown Date')
-    
-    return f"# {title}\n\n*Author:* {author}\n*Date:* {date}\n"
-
 # Main Function
 
 def main(args):
-    with open(args.input_file, 'r', encoding='utf-8') as file:
-        content = file.read()
-
-    if args.remove_whitespace:
-        content = remove_whitespace(content)
+    # Check if input is a directory
+    input_path = Path(args.input_file)
     
-    if args.normalize_case:
-        content = normalize_case(content, to_lower=args.to_lower)
+    if not input_path.is_dir():
+        print(f"Error: {input_path} is not a valid directory.")
+        return
     
-    if args.replace_special_chars:
-        content = replace_special_characters(content)
-
-    # Additional processing based on user arguments
-    if args.format_paragraphs:
-        content = format_paragraphs(content)
+    # Process each markdown file in the directory
+    for md_file in input_path.glob('*.md'):
+        print(f"Processing file: {md_file.name}")
         
-    if args.format_lists:
-        content = format_lists(content)
+        with open(md_file, 'r', encoding='utf-8') as file:
+            content = file.read()
 
-    if args.convert_links:
-        content = convert_hyperlinks(content)
+        if args.remove_whitespace:
+            content = remove_whitespace(content)
+        
+        if args.normalize_case:
+            content = normalize_case(content, to_lower=args.to_lower)
+        
+        if args.replace_special_chars:
+            content = replace_special_characters(content)
 
-    if args.spell_check:
-        content = spell_check(content)
+        if args.format_paragraphs:
+            content = format_paragraphs(content)
+        
+        if args.format_lists:
+            content = format_lists(content)
 
-    # Write cleaned content to output file
-    with open(args.output_file, 'w', encoding='utf-8') as file:
-        file.write(content)
+        if args.convert_links:
+            content = convert_hyperlinks(content)
+
+        if args.spell_check:
+            content = spell_check(content)
+
+        # Write cleaned content to output file
+        output_file_path = Path(args.output_file) / md_file.name  # Save cleaned file in output directory
+        with open(output_file_path, 'w', encoding='utf-8') as file:
+            file.write(content)
+        print(f"Cleaned file saved as: {output_file_path}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Cleanup MD files.')
+    parser = argparse.ArgumentParser(description='Cleanup MD files in a directory.')
     
-    # Input and output file arguments
-    parser.add_argument('input_file', type=str, help='Input MD file path')
-    parser.add_argument('output_file', type=str, help='Output MD file path')
+    # Input and output directory arguments
+    parser.add_argument('input_file', type=str, help='Input directory containing MD files')
+    parser.add_argument('output_file', type=str, help='Output directory for cleaned MD files')
     
     # Cleanup options
     parser.add_argument('--remove-whitespace', action='store_true', help='Remove unnecessary whitespace')
