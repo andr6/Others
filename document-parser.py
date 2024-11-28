@@ -21,16 +21,16 @@ class DocumentParser:
     SUPPORTED_EXTENSIONS = {'.pdf', '.txt', '.docx', '.xlsx'}
     SUPPORTED_OUTPUT_FORMATS = {'md', 'csv', 'xml'}
 
-    def __init__(self, should_extract_images: bool = True, should_ocr_images: bool = False, output_formats: set = {'md'}, generate_llama_index: bool = False):
+    def __init__(self, should_extract_images: bool = True, should_ocr_images: bool = False, output_formats: set = {'md'}, page_numbers: list = None):
         self.should_extract_images = should_extract_images
         self.should_ocr_images = should_ocr_images
         self.output_formats = output_formats
-        self.generate_llama_index = generate_llama_index
+        self.page_numbers = page_numbers if page_numbers is not None else []
 
     def extract_text(self, file_path: Path) -> str:
         try:
             if file_path.suffix == '.pdf':
-                return pymupdf4llm.to_markdown(str(file_path))
+                return pymupdf4llm.to_markdown(str(file_path), pages=self.page_numbers)
             elif file_path.suffix == '.txt':
                 return file_path.read_text(encoding='utf-8')
             elif file_path.suffix == '.docx':
@@ -56,6 +56,9 @@ class DocumentParser:
         try:
             doc = fitz.open(file_path)
             for i, page in enumerate(doc):
+                if self.page_numbers and i not in self.page_numbers:
+                    continue  # Skip pages not specified in page_numbers
+                
                 image_list = page.get_images(full=True)
                 for img_index, img in enumerate(image_list):
                     xref = img[0]
@@ -114,15 +117,6 @@ class DocumentParser:
             image_output_dir.mkdir(exist_ok=True)
             self.extract_images_from_file(input_path, image_output_dir)
 
-        # Generate LlamaIndex documents if requested
-        if self.generate_llama_index and input_path.suffix == '.pdf':
-            llama_docs = self.create_llama_index_documents(input_path)
-            llama_output_file = output_dir / f"{input_path.stem}_llama.json"
-            llama_docs_json_str = [doc.to_dict() for doc in llama_docs]
-            with open(llama_output_file, 'w', encoding='utf-8') as f:
-                json.dump(llama_docs_json_str, f, ensure_ascii=False, indent=4)
-            logger.info(f"LlamaIndex documents saved to: {llama_output_file}")
-
         return processed_files
 
     def save_as_csv(self, text: str, output_path: Path):
@@ -146,12 +140,6 @@ class DocumentParser:
         """Sanitize a string for use in XML."""
         return ''.join(c if c.isprintable() and c not in ('<', '>') else ' ' for c in value)
 
-    def create_llama_index_documents(self, input_file: Path):
-        """Create LlamaIndex documents from a PDF file."""
-        llama_reader = pymupdf4llm.LlamaMarkdownReader()
-        llama_docs = llama_reader.load_data(str(input_file))
-        return llama_docs
-
 def create_argument_parser():
     parser = argparse.ArgumentParser(
         description="Document Parsing and Text Extraction Tool for LLM Training",
@@ -167,8 +155,8 @@ def create_argument_parser():
     parser.add_argument('--show-supported-types', action='store_true', help='Display supported file types and exit')
     parser.add_argument('--format', nargs='+', choices=DocumentParser.SUPPORTED_OUTPUT_FORMATS,
                         default=['md'], help='Output format(s) (default: md)')
-    parser.add_argument('--llama-index', action='store_true', help='Generate LlamaIndex documents from PDF files')
-
+    parser.add_argument('--pages', nargs='+', type=int, help='List of specific pages to extract (0-based index)')
+    
     return parser
 
 def main():
@@ -189,7 +177,7 @@ def main():
         should_extract_images=not args.no_images,
         should_ocr_images=args.ocr,
         output_formats=set(args.format),
-        generate_llama_index=args.llama_index
+        page_numbers=args.pages  # Pass the specified pages to the DocumentParser
     )
 
     try:
