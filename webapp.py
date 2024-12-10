@@ -22,10 +22,9 @@ def check_redirect(url):
 
 def run_command(command, output_file):
     result = subprocess.run(command, capture_output=True, text=True)
-    output_file.write(f"Command: {' '.join(command)}\n")
-    output_file.write(result.stdout)
-    output_file.write(result.stderr)
-    output_file.write("\n\n")
+    output = f"Command: {' '.join(command)}\n{result.stdout}{result.stderr}\n\n"
+    output_file.write(output)
+    print(output)  # Display output on screen
 
 def identify_technologies(url, output_file):
     output_file.write("## Identifying Technologies\n")
@@ -97,44 +96,44 @@ def check_js_files(url, output_file):
 
 def check_api_endpoints(url, output_file):
     output_file.write("## Checking for API Endpoints\n")
-    run_command(["ffuf", "-w", "/path/to/api_wordlist.txt", "-u", f"{url}/FUZZ", "-mc", "200,201,204"], output_file)
+    run_command(["ffuf", "-w", "/path/to/api_wordlist.txt", "-u", f"{url}/FUZZ", "-mc", "200-299,401,403,405"], output_file)
 
 def directory_fuzzing(url, output_file):
     output_file.write("## Directory Fuzzing\n")
-    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ", "-u", f"{url}/FUZZ"], output_file)
+    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ", "-u", f"{url}/FUZZ", "-mc", "200-299,401,403,405"], output_file)
 
 def extension_fuzzing(url, output_file):
     output_file.write("## Extension Fuzzing\n")
-    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/web-extensions.txt:FUZZ", "-u", f"{url}/indexFUZZ"], output_file)
+    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/web-extensions.txt:FUZZ", "-u", f"{url}/indexFUZZ", "-mc", "200-299,401,403,405"], output_file)
 
 def page_fuzzing(url, output_file):
     output_file.write("## Page Fuzzing\n")
-    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ", "-u", f"{url}/FUZZ.php"], output_file)
+    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ", "-u", f"{url}/FUZZ.php", "-mc", "200-299,401,403,405"], output_file)
 
 def recursive_fuzzing(url, output_file):
     output_file.write("## Recursive Fuzzing\n")
-    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ", "-u", f"{url}/FUZZ", "-recursion", "-recursion-depth", "1", "-e", ".php", "-v"], output_file)
+    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/directory-list-2.3-small.txt:FUZZ", "-u", f"{url}/FUZZ", "-recursion", "-recursion-depth", "1", "-e", ".php", "-v", "-mc", "200-299,401,403,405"], output_file)
 
 def subdomain_fuzzing(domain, output_file):
     output_file.write("## Subdomain Fuzzing\n")
-    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ", "-u", f"https://FUZZ.{domain}/"], output_file)
+    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ", "-u", f"https://FUZZ.{domain}", "-mc", "200-299,401,403,405"], output_file)
 
 def vhost_fuzzing(url, output_file):
     output_file.write("## VHost Fuzzing\n")
     parsed_url = urlparse(url)
-    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ", "-u", url, "-H", f"Host: FUZZ.{parsed_url.netloc}", "-fs", "900"], output_file)
+    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/DNS/subdomains-top1million-5000.txt:FUZZ", "-u", url, "-H", f"Host: FUZZ.{parsed_url.netloc}", "-mc", "200-299,401,403,405"], output_file)
 
 def parameter_fuzzing_get(url, output_file):
     output_file.write("## Parameter Fuzzing - GET\n")
-    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/burp-parameter-names.txt:FUZZ", "-u", f"{url}?FUZZ=key", "-fs", "xxx"], output_file)
+    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/burp-parameter-names.txt:FUZZ", "-u", f"{url}?FUZZ=key", "-mc", "200-299,401,403,405"], output_file)
 
 def parameter_fuzzing_post(url, output_file):
     output_file.write("## Parameter Fuzzing - POST\n")
-    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/burp-parameter-names.txt:FUZZ", "-u", url, "-X", "POST", "-d", "FUZZ=key", "-H", "Content-Type: application/x-www-form-urlencoded", "-fs", "xxx"], output_file)
+    run_command(["ffuf", "-w", "/opt/useful/SecLists/Discovery/Web-Content/burp-parameter-names.txt:FUZZ", "-u", url, "-X", "POST", "-d", "FUZZ=key", "-H", "Content-Type: application/x-www-form-urlencoded", "-mc", "200-299,401,403,405"], output_file)
 
 def value_fuzzing(url, output_file):
     output_file.write("## Value Fuzzing\n")
-    run_command(["ffuf", "-w", "wordlist.txt:FUZZ", "-u", url, "-X", "POST", "-d", "id=FUZZ", "-H", "Content-Type: application/x-www-form-urlencoded", "-fs", "xxx"], output_file)
+    run_command(["ffuf", "-w", "wordlist.txt:FUZZ", "-u", url, "-X", "POST", "-d", "id=FUZZ", "-H", "Content-Type: application/x-www-form-urlencoded", "-mc", "200-299,401,403,405"], output_file)
 
 def main(args):
     url = fix_url_scheme(args.url)
@@ -208,15 +207,15 @@ if __name__ == "__main__":
     parser.add_argument("-m", "--ntlm-info", action="store_true", help="Check for NTLM info disclosure")
     parser.add_argument("-j", "--js-files", action="store_true", help="Analyze JavaScript files")
     parser.add_argument("-e", "--api-endpoints", action="store_true", help="Check for API endpoints")
-    parser.add_argument("--fuzz-dirs", action="store_true", help="Fuzz directories")
-    parser.add_argument("--fuzz-ext", action="store_true", help="Fuzz extensions")
-    parser.add_argument("--fuzz-pages", action="store_true", help="Fuzz pages")
-    parser.add_argument("--fuzz-recursive", action="store_true", help="Recursive fuzzing")
-    parser.add_argument("--fuzz-subdomains", action="store_true", help="Fuzz subdomains")
-    parser.add_argument("--fuzz-vhosts", action="store_true", help="Fuzz virtual hosts")
-    parser.add_argument("--fuzz-params-get", action="store_true", help="Fuzz GET parameters")
-    parser.add_argument("--fuzz-params-post", action="store_true", help="Fuzz POST parameters")
-    parser.add_argument("--fuzz-values", action="store_true", help="Fuzz parameter values")
+    parser.add_argument("-fd", "--fuzz-dirs", action="store_true", help="Fuzz directories")
+    parser.add_argument("-fe", "--fuzz-ext", action="store_true", help="Fuzz extensions")
+    parser.add_argument("-fp", "--fuzz-pages", action="store_true", help="Fuzz pages")
+    parser.add_argument("-fr", "--fuzz-recursive", action="store_true", help="Recursive fuzzing")
+    parser.add_argument("-fs", "--fuzz-subdomains", action="store_true", help="Fuzz subdomains")
+    parser.add_argument("-fv", "--fuzz-vhosts", action="store_true", help="Fuzz virtual hosts")
+    parser.add_argument("-fg", "--fuzz-params-get", action="store_true", help="Fuzz GET parameters")
+    parser.add_argument("-fo", "--fuzz-params-post", action="store_true", help="Fuzz POST parameters")
+    parser.add_argument("-fz", "--fuzz-values", action="store_true", help="Fuzz parameter values")
     
     args = parser.parse_args()
     
