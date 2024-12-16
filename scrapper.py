@@ -14,8 +14,8 @@ def read_urls_from_file(file_path):
     with open(file_path, 'r') as file:
         return [line.strip() for line in file if line.strip()]
 
-def search_and_download_pdfs(target, max_results=100):
-    command = f"ddgs text -k \"'site:{target}' 'filetype:pdf'\" -d -m {max_results}"
+def search_and_download_pdfs(target, max_results=100, download_dir='downloaded_pdfs'):
+    command = f"ddgs text -k \"'site:{target}' 'filetype:pdf'\" -d -m {max_results} -dd {download_dir}"
     try:
         result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
         print(result.stdout)
@@ -128,7 +128,7 @@ def main():
         print(f"Processing: {url}")
         target = url.split('//')[1].split('/')[0]
         
-        if search_and_download_pdfs(target, args.max):
+        if search_and_download_pdfs(target, args.max, download_dir):
             print(f"Search and download completed for {url}")
         else:
             print(f"CLI search failed for {url}.")
@@ -148,4 +148,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-s
