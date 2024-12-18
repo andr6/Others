@@ -15,9 +15,9 @@ def read_urls_from_file(file_path):
         return [line.strip() for line in file if line.strip()]
 
 def search_and_download_pdfs(target, max_results=100, download_dir='downloaded_pdfs'):
-    command = f"ddgs text -k \"'site:{target}' 'filetype:pdf'\" -d -m {max_results} -dd {download_dir}"
+    command = ["ddgs", "text", "-k", f"'site:{target}' 'filetype:pdf'", "-d", "-m", str(max_results), "-dd", download_dir]
     try:
-        result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
         print(result.stdout)
         return True
     except subprocess.CalledProcessError as e:
