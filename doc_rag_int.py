@@ -3,19 +3,20 @@ import base64
 from pathlib import Path
 from typing import Optional
 import argparse
+import time
 
 import google.generativeai as genai
 from chromadb.api.types import EmbeddingFunction
 from chromadb.utils import embedding_functions
-from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_core.embeddings import Embeddings
-from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
+from pinecone import Pinecone, ServerlessSpec
+from openai import OpenAI
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from document_ai_agents.logger import logger
 
-class ChromaEmbeddingsAdapter(Embeddings):
+class ChromaEmbeddingsAdapter:
     def __init__(self, ef: EmbeddingFunction):
         self.ef = ef
 
@@ -24,6 +25,18 @@ class ChromaEmbeddingsAdapter(Embeddings):
 
     def embed_query(self, query):
         return self.ef([query])[0]
+
+class OpenAIEmbeddings:
+    def __init__(self):
+        self.client = OpenAI()
+
+    def embed_documents(self, texts):
+        response = self.client.embeddings.create(input=texts, model="text-embedding-ada-002")
+        return [embedding.embedding for embedding in response.data]
+
+    def embed_query(self, query):
+        response = self.client.embeddings.create(input=[query], model="text-embedding-ada-002")
+        return response.data[0].embedding
 
 class DocumentRAGState(BaseModel):
     question: str
@@ -34,171 +47,130 @@ class DocumentRAGState(BaseModel):
     response: Optional[str] = None
 
 class DocumentRAGAgent:
-    def __init__(self, model_name="gemini-1.5-flash-002", k=3, storage_backend="chroma"):
+    def __init__(self, model_name="gemini-1.5-flash-002", k=3, storage_backend="pinecone", embedding_type="chroma"):
         self.model_name = model_name
-        self.model = genai.GenerativeModel(
-            self.model_name,
-        )
+        self.model = genai.GenerativeModel(self.model_name)
+        self.k = k
+        self.embedding_type = embedding_type
         self.vector_store = self._initialize_vector_store(storage_backend)
-        self.retriever = self.vector_store.as_retriever(search_kwargs={"k": k})
+        self.embedder = self._initialize_embedder()
 
-        self.graph = None
-        self.build_agent()
+    def _initialize_embedder(self):
+        if self.embedding_type == "chroma":
+            return ChromaEmbeddingsAdapter(embedding_functions.DefaultEmbeddingFunction())
+        elif self.embedding_type == "openai":
+            return OpenAIEmbeddings()
+        else:
+            raise ValueError(f"Unsupported embedding type: {self.embedding_type}")
 
     def _initialize_vector_store(self, backend):
         if backend == "pinecone":
-            from langchain.vectorstores import Pinecone
-            import pinecone
-            pinecone.init(api_key="your-pinecone-api-key")
-            return Pinecone(index_name="document-rag")
-        elif backend == "weaviate":
-            from langchain.vectorstores import Weaviate
-            return Weaviate(client_config={"host": "your-weaviate-instance-url"})
-        else:
-            return Chroma(
-                collection_name="document-rag",
-                embedding_function=ChromaEmbeddingsAdapter(
-                    embedding_functions.DefaultEmbeddingFunction()
-                ),
-            )
+            pinecone_api_key = os.getenv("PINECONE_API_KEY")
+            pinecone_region = os.getenv("PINECONE_REGION", "us-east-1")
+            pc = Pinecone(api_key=pinecone_api_key)
+            index_name = "document-rag"
 
+            dimension = 1536 if self.embedding_type == "openai" else 384
+
+            if index_name in pc.list_indexes().names():
+                index = pc.Index(index_name)
+                index_stats = index.describe_index_stats()
+                existing_dimension = index_stats.dimension
+
+                if existing_dimension != dimension:
+                    logger.warning(f"Existing index dimension ({existing_dimension}) does not match required dimension ({dimension}).")
+                    logger.warning("Deleting existing index and creating a new one with the correct dimension.")
+                    pc.delete_index(index_name)
+                    pc.create_index(
+                        name=index_name,
+                        dimension=dimension,
+                        metric="cosine",
+                        spec=ServerlessSpec(cloud="aws", region=pinecone_region)
+                    )
+            else:
+                pc.create_index(
+                    name=index_name,
+                    dimension=dimension,
+                    metric="cosine",
+                    spec=ServerlessSpec(cloud="aws", region=pinecone_region)
+                )
+
+            return pc.Index(index_name)
+        else:
+            raise ValueError(f"Unsupported backend: {backend}")
+
+    @retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
     def index_documents(self, state: DocumentRAGState):
         if not state.documents:
-            logger.error("No documents found to index. Please ensure the parsing step succeeded and check the input document format.")
-            print("Error: No documents to index. Ensure your document parsing is successful.")
-            raise ValueError("Documents should have at least one element.")
+            raise ValueError("No documents found to index. Ensure parsing is successful.")
 
-        existing_ids = self.vector_store.get(where={"document_path": state.document_path}).get("ids", [])
-        if existing_ids:
-            logger.info(f"Documents for {state.document_path} are already indexed.")
-            return
+        logger.info(f"Indexing {len(state.documents)} documents in Pinecone.")
 
-        logger.info(f"Indexing {len(state.documents)} documents for {state.document_path}.")
-        for doc in state.documents:
-            if not isinstance(doc, Document):
-                logger.error("Invalid document format. Each document should be an instance of the Document class.")
-                raise ValueError("Document is not properly formatted.")
+        vectors = []
+        for i, doc in enumerate(state.documents):
+            embedding = self.embedder.embed_documents([doc.page_content])[0]
+            # Flatten and stringify the metadata
+            metadata = {
+                "document_path": str(doc.metadata.get("document_path", "")),
+                "page_number": str(doc.metadata.get("page_number", "")),
+                "content": doc.page_content[:1000]  # Truncate content if necessary
+            }
+            vectors.append((f"doc-{i}", embedding.tolist(), metadata))
 
         try:
-            self.vector_store.add_documents(state.documents)
-            logger.info("Documents successfully indexed.")
+            self.vector_store.upsert(vectors)
+            logger.info(f"Successfully indexed {len(vectors)} vectors in Pinecone.")
         except Exception as e:
-            logger.error(f"Failed to index documents: {e}")
+            logger.error(f"Error during indexing: {str(e)}")
             raise
 
     def answer_question(self, state: DocumentRAGState):
         if not state.documents:
-            logger.error(f"No documents available for answering the question: {state.question}")
-            raise ValueError("Documents should have at least one element.")
+            raise ValueError("No documents available to answer the question.")
 
-        relevant_documents: list[Document] = self.retriever.invoke(state.question)
+        logger.info(f"Searching for relevant documents for the query: {state.question}")
 
-        if not relevant_documents:
-            logger.warning(f"No relevant documents retrieved for question: {state.question}. Consider refining your question or ensuring the documents are properly indexed.")
-            return {"response": "No relevant documents found. Please refine your question or check the indexed data.", "relevant_documents": []}
+        query_embedding = self.embedder.embed_query(state.question)
 
-        images = list(
-            set(
-                [
-                    state.pages_as_base64_jpeg_images[doc.metadata.get("page_number", 0)]
-                    for doc in relevant_documents
-                    if "page_number" in doc.metadata
-                ]
+        query_results = self.vector_store.query(
+            vector=query_embedding.tolist(),
+            top_k=self.k,
+            include_metadata=True,
+        )
+
+        if not query_results.get("matches"):
+            return {"response": "No relevant documents found.", "relevant_documents": []}
+
+        relevant_docs = [
+            Document(
+                page_content=match["metadata"]["content"],
+                metadata={k: v for k, v in match["metadata"].items() if k != "content"}
             )
-        )  # Avoid duplicates
+            for match in query_results["matches"]
+        ]
 
-        logger.info(f"Responding to question: {state.question}")
-        messages = (
-            [{"mime_type": "image/jpeg", "data": base64_jpeg} for base64_jpeg in images]
-            + [doc.page_content for doc in relevant_documents]
-            + [
-                f"Answer this question using the context images and text elements only: {state.question}",
-            ]
-        )
+        logger.info(f"Retrieved {len(relevant_docs)} relevant documents.")
 
-        try:
-            response = self.model.generate_content(messages)
-        except TimeoutError:
-            logger.error("Model request timed out. Returning fallback response.")
-            response = type('FallbackResponse', (object,), {"text": "The request timed out. Please try again later."})()
+        # Generate a response using the relevant documents
+        context = "\n".join([doc.page_content for doc in relevant_docs])
+        prompt = f"Based on the following context, answer the question: '{state.question}'\n\nContext:\n{context}\n\nAnswer:"
 
-        return {"response": response.text, "relevant_documents": relevant_documents}
+        response = self.model.generate_content(prompt)
+        answer = response.text
 
-    def build_agent(self):
-        builder = StateGraph(DocumentRAGState)
-        builder.add_node("index_documents", self.index_documents)
-        builder.add_node("answer_question", self.answer_question)
+        return {"response": answer, "relevant_documents": relevant_docs}
 
-        builder.add_edge(START, "index_documents")
-        builder.add_edge("index_documents", "answer_question")
-        builder.add_edge("answer_question", END)
-        self.graph = builder.compile()
-
-# Function to display the help menu
-
-def run_tests():
-    print("Running Tests...\n")
-
-    # Test 1: Ensure parsing extracts documents
-    try:
-        print("Test 1: Parsing documents")
-        test_state = DocumentLayoutParsingState(document_path="../document_ai_agents/data/docs.pdf")
-        parsing_result = agent1.graph.invoke(test_state)
-        assert parsing_result["documents"], "Parsing failed. No documents extracted."
-        print("Test 1 Passed: Documents parsed successfully.\n")
-    except AssertionError as e:
-        print(f"Test 1 Failed: {e}\n")
-
-    # Test 2: Ensure indexing works correctly
-    try:
-        print("Test 2: Indexing documents")
-        state_to_index = DocumentRAGState(
-            question="",
-            document_path="../document_ai_agents/data/docs.pdf",
-            pages_as_base64_jpeg_images=parsing_result["pages_as_base64_jpeg_images"],
-            documents=parsing_result["documents"],
-        )
-        agent2.index_documents(state_to_index)
-        print("Test 2 Passed: Documents indexed successfully.\n")
-    except Exception as e:
-        print(f"Test 2 Failed: {e}\n")
-
-    # Test 3: Interaction with the indexed data
-    try:
-        print("Test 3: Interaction with indexed data")
-        state_to_query = DocumentRAGState(
-            question="Who is the author?",
-            document_path="../document_ai_agents/data/docs.pdf",
-        )
-        query_result = agent2.answer_question(state_to_query)
-        assert query_result["response"], "Query failed. No response returned."
-        print(f"Test 3 Passed: Query successful. Response: {query_result['response']}\n")
-    except AssertionError as e:
-        print(f"Test 3 Failed: {e}\n")
-
-    print("All Tests Completed.")
-
-def display_help():
-    print("""
-    Usage:
-    python script.py --path <PDF_OR_DIRECTORY_PATH>
-
-    Arguments:
-    --path : Path to a single PDF file or a directory containing multiple PDFs.
-
-    Commands:
-    After processing, you can ask questions about the content interactively.
-    Type 'exit' to quit the interactive session.
-    """)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process documents and interact with their content.")
     parser.add_argument("--path", type=str, required=True, help="Path to the document or directory of documents.")
-    parser.add_argument("--storage", type=str, default="chroma", help="Vector store backend: 'chroma', 'pinecone', or 'weaviate'.")
+    parser.add_argument("--storage", type=str, default="pinecone", help="Vector store backend: 'pinecone' or 'chroma'.")
+    parser.add_argument("--embedding", type=str, default="chroma", choices=["chroma", "openai"], help="Embedding type to use: 'chroma' or 'openai'.")
     args = parser.parse_args()
 
     document_path = args.path
     storage_backend = args.storage
+    embedding_type = args.embedding
 
     from document_ai_agents.document_parsing_agent import (
         DocumentLayoutParsingState,
@@ -222,7 +194,7 @@ if __name__ == "__main__":
     document_files = process_documents(document_path)
 
     agent1 = DocumentParsingAgent()
-    agent2 = DocumentRAGAgent(storage_backend=storage_backend)
+    agent2 = DocumentRAGAgent(storage_backend=storage_backend, embedding_type=embedding_type)
 
     for document_file in document_files:
         print(f"Processing: {document_file}")
@@ -243,10 +215,10 @@ if __name__ == "__main__":
             documents=result1["documents"],
         )
 
-        agent2.graph.invoke(state2)
+        agent2.index_documents(state2)
         print(f"Indexed: {document_file}")
 
-    print("\nInteractive Question-Answering Session. Type 'exit' to quit.")
+    print("Interactive Question-Answering Session. Type 'exit' to quit.")
     while True:
         question = input("Enter your question (or type 'exit' to quit): ").strip()
         if question.lower() == "exit":
@@ -256,7 +228,7 @@ if __name__ == "__main__":
             state2.question = question  # Reuse state with the new question
 
             try:
-                result = agent2.graph.invoke(state2)
+                result = agent2.answer_question(state2)
                 print(f"Answer from {document_file}: {result['response']}")
             except Exception as e:
                 logger.error(f"Error while answering question: {e}")
